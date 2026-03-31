@@ -14,3 +14,16 @@ Okay. And in the file itself, in the file here, there are some key things. These
 
 
 Yeah, we can do that, sir. Multiple and single we can convert, yes. Right, right, that is also true. I think, yeah, one sample we can do. Hey Dipesh, sorry, I don't know, like, it suddenly stopped, disconnected. Uh-huh, okay, okay. So I would say that also audit is not clear. What is the source? Mm-hmm, okay. So what do you think, like,
+
+
+
+
+1. Generate Terraform (via agent / manually)
+2. Raise PR (GitHub)
+3. Share PR link in channel
+4. Reviewer checks changes
+5. Run Terraform PLAN (in GitHub UI)
+6. Reviewer approves PR
+7. Run Terraform APPLY (in GitHub UI)
+8. Infra created (BQ tables etc.)
+9. PR auto closes + branch deleted
