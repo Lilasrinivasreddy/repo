@@ -1,272 +1,338 @@
--- =========================================================
--- STEP 1 : CREATE STAGING TABLE (TODAY SNAPSHOT)
--- =========================================================
-
-CREATE OR REPLACE TABLE `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_stg`
+CREATE TABLE IF NOT EXISTS
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count`
 (
-    id STRING,
-    value INT64,
-    current_ts TIMESTAMP
+    table_name STRING,
+    table_count INT64,
+    load_date DATE,
+    last_updt TIMESTAMP
+);
+
+--------
+
+
+CREATE TABLE IF NOT EXISTS
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count_hist`
+(
+    table_name STRING,
+    table_count INT64,
+    load_date DATE,
+    last_updt TIMESTAMP
+);
+
+---------
+
+CREATE TABLE IF NOT EXISTS
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_validation_result`
+(
+    load_date DATE,
+    table_name STRING,
+    today_count INT64,
+    previous_count INT64,
+    difference INT64,
+    status STRING,
+    remarks STRING,
+    created_ts TIMESTAMP
 );
 
 
 
--- =========================================================
--- STEP 2 : INSERT TODAY DATA INTO STG
--- =========================================================
+----------
 
--- TODAY SNAPSHOT
--- B deleted
--- C updated from 3 -> 10
--- F inserted
+DELETE FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count`
+WHERE TRUE;
 
-INSERT INTO `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_stg`
-VALUES
-('A',1,CURRENT_TIMESTAMP()),
-('C',10,CURRENT_TIMESTAMP()),
-('D',4,CURRENT_TIMESTAMP()),
-('E',5,CURRENT_TIMESTAMP()),
-('F',6,CURRENT_TIMESTAMP());
+---------
 
 
-
--- =========================================================
--- STEP 3 : CREATE FINAL/SOR TABLE (YESTERDAY SNAPSHOT)
--- =========================================================
-
-CREATE OR REPLACE TABLE `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_sor_final`
+INSERT INTO
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count`
 (
-    id STRING,
-    value INT64,
-    optype STRING,
-    current_ts TIMESTAMP
-);
-
-
-
--- =========================================================
--- STEP 4 : INSERT YESTERDAY DATA INTO FINAL TABLE
--- =========================================================
-
-INSERT INTO `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_sor_final`
-VALUES
-('A',1,'I',CURRENT_TIMESTAMP()),
-('B',2,'I',CURRENT_TIMESTAMP()),
-('C',3,'I',CURRENT_TIMESTAMP()),
-('D',4,'I',CURRENT_TIMESTAMP()),
-('E',5,'I',CURRENT_TIMESTAMP());
-
-
-
--- =========================================================
--- STEP 5 : VERIFY STG TABLE
--- =========================================================
-
-SELECT *
-FROM `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_stg`;
-
-
-
--- =========================================================
--- STEP 6 : VERIFY FINAL TABLE
--- =========================================================
-
-SELECT *
-FROM `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_sor_final`;
-
-
-
--- =========================================================
--- STEP 7 : CREATE GOLDENGATE DELTA TABLE
--- =========================================================
-
-CREATE OR REPLACE TABLE `iw-gid-bld-01-7904.gid_mfb_staging.goldengate_delta_poc`
-(
-    id STRING,
-    value INT64,
-    loadflag STRING,
-    current_ts TIMESTAMP
-);
-
-
-
--- =========================================================
--- STEP 8 : FINAL - STG
--- DERIVE DELETE RECORDS
--- =========================================================
-
-INSERT INTO `iw-gid-bld-01-7904.gid_mfb_staging.goldengate_delta_poc`
-
-SELECT
-    f.id,
-    f.value,
-    'D' AS loadflag,
-    CURRENT_TIMESTAMP() AS current_ts
-
-FROM `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_sor_final` f
-
-LEFT JOIN `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_stg` s
-
-ON f.id = s.id
-AND f.value = s.value
-
-WHERE s.id IS NULL;
-
-
-
--- =========================================================
--- STEP 9 : STG - FINAL
--- DERIVE INSERT RECORDS
--- =========================================================
-
-INSERT INTO `iw-gid-bld-01-7904.gid_mfb_staging.goldengate_delta_poc`
-
-SELECT
-    s.id,
-    s.value,
-    'I' AS loadflag,
-    CURRENT_TIMESTAMP() AS current_ts
-
-FROM `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_stg` s
-
-LEFT JOIN `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_sor_final` f
-
-ON s.id = f.id
-AND s.value = f.value
-
-WHERE f.id IS NULL;
-
-
-
--- =========================================================
--- STEP 10 : VERIFY GOLDENGATE DELTA TABLE
--- =========================================================
-
-SELECT *
-FROM `iw-gid-bld-01-7904.gid_mfb_staging.goldengate_delta_poc`
-ORDER BY current_ts;
-
-
-
--- EXPECTED RESULT
---
--- B 2  D
--- C 3  D
--- C 10 I
--- F 6  I
-
-
-
--- =========================================================
--- STEP 11 : APPLY CDC MERGE LOGIC
--- =========================================================
-
-MERGE `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_sor_final` T
-
-USING
-(
-    SELECT *
-    FROM `iw-gid-bld-01-7904.gid_mfb_staging.goldengate_delta_poc`
-) S
-
-ON T.id = S.id
-
-
-WHEN MATCHED
-AND S.loadflag = 'D'
-
-THEN DELETE
-
-
-WHEN MATCHED
-AND S.loadflag = 'I'
-
-THEN
-UPDATE SET
-    T.value = S.value,
-    T.optype = S.loadflag,
-    T.current_ts = S.current_ts
-
-
-WHEN NOT MATCHED
-AND S.loadflag = 'I'
-
-THEN
-INSERT
-(
-    id,
-    value,
-    optype,
-    current_ts
+    table_name,
+    table_count,
+    load_date,
+    last_updt
 )
 
-VALUES
-(
-    S.id,
-    S.value,
-    S.loadflag,
-    S.current_ts
-);
+SELECT
+'rds_addnl_support_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_addnl_support_stg`
 
-
-
--- =========================================================
--- STEP 12 : VERIFY FINAL SOR TABLE
--- =========================================================
-
-SELECT *
-FROM `iw-gid-bld-01-7904.gid_mfb_staging.mfb_odp_sor_final`
-ORDER BY id;
-
-
-
--- EXPECTED FINAL RESULT
---
--- A 1
--- C 10
--- D 4
--- E 5
--- F 6
-
-
-
--- =========================================================
--- STEP 13 : OPTIONAL AUDIT TABLE
--- =========================================================
-
-CREATE OR REPLACE TABLE `iw-gid-bld-01-7904.gid_mfb_staging.audit_poc`
-(
-    batch_id STRING,
-    process_name STRING,
-    status STRING,
-    records_processed INT64,
-    process_ts TIMESTAMP
-);
-
-
-
-INSERT INTO `iw-gid-bld-01-7904.gid_mfb_staging.audit_poc`
+UNION ALL
 
 SELECT
-    'BATCH_001',
-    'SOR_MERGE_PROCESS',
-    'SUCCESS',
-    COUNT(*),
-    CURRENT_TIMESTAMP()
+'rds_addresses_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_addresses_stg`
 
-FROM `iw-gid-bld-01-7904.gid_mfb_staging.goldengate_delta_poc`;
+UNION ALL
+
+SELECT
+'rds_bancs_codes_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_bancs_codes_stg`
+
+UNION ALL
+
+SELECT
+'rds_case_workflow_details_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_case_workflow_details_stg`
+
+UNION ALL
+
+SELECT
+'rds_case_workflow_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_case_workflow_stg`
+
+UNION ALL
+
+SELECT
+'rds_contact_hist_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_contact_hist_stg`
+
+UNION ALL
+
+SELECT
+'rds_country_list_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_country_list_stg`
+
+UNION ALL
+
+SELECT
+'rds_cust_details_corporate_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_cust_details_corporate_stg`
+
+UNION ALL
+
+SELECT
+'rds_cust_details_individual_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_cust_details_individual_stg`
+
+UNION ALL
+
+SELECT
+'rds_customer_instruction_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_customer_instruction_stg`
+
+UNION ALL
+
+SELECT
+'rds_document_submitted_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_document_submitted_stg`
+
+UNION ALL
+
+SELECT
+'rds_instructions_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_instructions_stg`
+
+UNION ALL
+
+SELECT
+'rds_intrstd_pty_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_intrstd_pty_stg`
+
+UNION ALL
+
+SELECT
+'rds_portfolio_details_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_portfolio_details_stg`
+
+UNION ALL
+
+SELECT
+'rds_q_user_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_q_user_stg`
+
+UNION ALL
+
+SELECT
+'rds_qc_details_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_qc_details_stg`
+
+UNION ALL
+
+SELECT
+'rds_qz_dates_back_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_qz_dates_back_stg`
+
+UNION ALL
+
+SELECT
+'rds_qz_dates_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_qz_dates_stg`
+
+UNION ALL
+
+SELECT
+'rds_shareclass_details_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_shareclass_details_stg`
+
+UNION ALL
+
+SELECT
+'rds_txn_deal_details_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_txn_deal_details_stg`
+
+UNION ALL
+
+SELECT
+'rds_txn_transfer_details_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_txn_transfer_details_stg`
+
+UNION ALL
+
+SELECT
+'rds_user_group_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_user_group_stg`
+
+UNION ALL
+
+SELECT
+'rds_user_user_group_stg',
+COUNT(*),
+CURRENT_DATE(),
+CURRENT_TIMESTAMP()
+FROM `iw-gid-bld-01-7904.gid_mfb_staging.rds_user_user_group_stg`;
+
+---------
 
 
 
--- =========================================================
--- STEP 14 : DUPLICATE / REPROCESS VALIDATION
--- =========================================================
+DELETE FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count_hist`
+WHERE load_date = CURRENT_DATE();
+
+INSERT INTO
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count_hist`
 
 SELECT *
-FROM `iw-gid-bld-01-7904.gid_mfb_staging.audit_poc`
-WHERE batch_id = 'BATCH_001'
-AND status = 'SUCCESS';
+FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count`;
 
 
--- IF RECORD EXISTS
--- SKIP REPROCESSING
+-----
+INSERT INTO
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_validation_result`
+
+SELECT
+    c.load_date,
+    c.table_name,
+    c.table_count AS today_count,
+    h.table_count AS previous_count,
+
+    c.table_count - IFNULL(h.table_count,0) AS difference,
+
+    CASE
+        WHEN h.table_count IS NULL THEN 'BASELINE'
+        WHEN c.table_count < h.table_count THEN 'ALERT'
+        ELSE 'PASS'
+    END AS status,
+
+    CASE
+        WHEN h.table_count IS NULL
+        THEN 'First time load'
+
+        WHEN c.table_count < h.table_count
+        THEN 'Count decreased'
+
+        ELSE 'Validation successful'
+    END AS remarks,
+
+    CURRENT_TIMESTAMP()
+
+FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count` c
+
+LEFT JOIN
+(
+    SELECT * EXCEPT(rn)
+    FROM
+    (
+        SELECT *,
+               ROW_NUMBER() OVER
+               (
+                   PARTITION BY table_name
+                   ORDER BY load_date DESC
+               ) rn
+        FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count_hist`
+        WHERE load_date < CURRENT_DATE()
+    )
+    WHERE rn = 1
+) h
+
+ON c.table_name = h.table_name;
+
+
+------
+
+
+SELECT *
+FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_validation_result`
+ORDER BY table_name;
