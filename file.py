@@ -1,4 +1,47 @@
 DELETE FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_validation_result`
+WHERE DATE(created_ts)=CURRENT_DATE();
+
+INSERT INTO
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_validation_result`
+
+SELECT
+    c.table_name,
+
+    c.table_count AS today_count,
+
+    h.table_count AS previous_count,
+
+    c.table_count - IFNULL(h.table_count,0) AS difference,
+
+    CURRENT_TIMESTAMP() AS created_ts
+
+FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count` c
+
+LEFT JOIN
+(
+    SELECT * EXCEPT(rn)
+    FROM
+    (
+        SELECT *,
+               ROW_NUMBER() OVER
+               (
+                   PARTITION BY table_name
+                   ORDER BY current_ts DESC
+               ) rn
+
+        FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count_hist`
+
+        WHERE DATE(current_ts) < CURRENT_DATE()
+    )
+    WHERE rn = 1
+) h
+
+ON c.table_name = h.table_name;
+==============================================================================
+DELETE FROM
 `iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count_hist`
 WHERE DATE(current_ts)=CURRENT_DATE();
 
