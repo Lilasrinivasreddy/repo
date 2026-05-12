@@ -1,3 +1,14 @@
+DELETE FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count_hist`
+WHERE DATE(current_ts)=CURRENT_DATE();
+
+INSERT INTO
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count_hist`
+
+SELECT *
+FROM
+`iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count`;
+=============
 INSERT INTO
 `iw-gid-bld-01-7904.gid_mfb_staging.reconciliation_count`
 (
