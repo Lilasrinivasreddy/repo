@@ -1,59 +1,7 @@
-read_param = ReadParam(global_filepath=global_param_gcs_uri)
+In this case, if you give reconciliation, it will execute reconciliation as well as day. I'm just like doubtful. I'm not sure. Maybe in the code, if it is, if it is working, then I'm fine with it because here you do not have other queries. So I'm not sure if you have tested it. You will not be able to see the impact because under the application, you will have only one file here. All right, Gopi. Yes. So with the existing, I mean, yeah, with the existing code, I have actually tested in the pod only, but in this scenario also, I will try to test it once again with the daily and this run mode, we need to change it. That one loss logic, I will try to test it once again, Gopi. Understood.
 
-schema = read_param.global_data['audit_dataset']
-tablename = read_param.global_data['fdp_audit_tablename']
-project_id = read_param.global_data.get("project")
-reject_file_path = read_param.global_data.get("fdp_reject_file_path")
+And the next step is run entity wrapper. This will figure the module or this will load the data from file to table. And then we have the tag summary. Maybe in between, you should add this step of calling this FDP, calling this query, that whatever the merge query that Leela created. And while doing that, while querying that, you can utilize the FTP module and the tag, but you should use FTP module and create a subtask here so that you are doing the reconciliation here itself, not in FTP layer. Okay.
 
+    Okay, before the FDP triggers, right? Yes. What happened? So you are just using a module, right? I'll show you how this is the ChatGPT MVP injection, right? MVP injection, what's happening? Environment variables and this MVP, the same module, you are calling it here with the input parameter of daily here. Right. Not sure, maybe somewhere we are passing that input parameter. I think in the code on existing, we have that parameter. Right. So here. Thank you.
 
-
-
-project_id = "iw-gid-bld-01-7904"
-
-schema = "gid_mfb_audit"
-
-tablename = "mfb_fdp_batch_run_audit"
-
-reject_file_path = "dummy"
-
-class Dummy:
-    dag_run_id = "manual_test_2026-05-18 22:30:00"
-
-read_param = Dummy()
-
-
-
-Then directly run
-From ~/core:
-Bash
-python fdp_ingestion.py dummy --run-mode=reconciliation
-Why dummy?
-Because script still expects:
-Python
-sys.argv[1]
-but now you bypassed actual GCS reading.
-What should happen
-You should see logs like:
-Plain text
-Resolved GCP project: iw-gid-bld-01-7904
-Run mode: reconciliation
-Running reconciliation query: staging:reconciliation_result
-Reconciliation query completed successfully
-Then validate in BigQuery
-Run:
-Bash
-bq query --use_legacy_sql=false \
-"SELECT *
-FROM \`iw-gid-bld-01-7904.gid_mfb_audit.mfb_reconciliation_result\`
-ORDER BY created_ts DESC
-LIMIT 10"
-This confirms
-✅ JSON loading works
-✅ reconciliation mode works
-✅ query rendering works
-✅ {{PROJECT_ID}} replacement works
-✅ BigQuery execution works
-✅ query insertion works
-without needing actual runtime DAG config.
-Important
-
+But you're calling this FDP solution, but with an input parameter of daily. And there is another tag for reference, FDP for FDP. Yeah, okay. So I think in the run mode, we are calling it as a daily, and next is the reference we are passing. That is where we are getting it. Correct, correct. So there are two different tags, but for this scenario, for reconciliation, I want you to use the, maybe analyze this. If it is not usable, let me know. That particular module is not usable for this scenario and all. It's fine. But for us, the view or the solution I'm looking at is, after the file is loaded, after this task, multi-entity runner is being triggered, you need to add a task here to trigger this FDP module with the input parameter of reconciliation so that it will trigger only that query. It will not do anything else. Yeah. It will only trigger the query, merge query, whatever we created for the reconciliation. Exactly. With the current logic, it's the same only Gopi, like it won't trigger. No, the current logic will do, when you are keeping it in the file or the logical. Okay, okay. That I have, that I will. No, no, no. Actually, the confusion is, so in this MAB pipeline, there is no queries here. In the logical where it was empty Gopi. So that's why I have added my query here. Understood. Maybe for testing,
