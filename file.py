@@ -1,7 +1,209 @@
-In this case, if you give reconciliation, it will execute reconciliation as well as day. I'm just like doubtful. I'm not sure. Maybe in the code, if it is, if it is working, then I'm fine with it because here you do not have other queries. So I'm not sure if you have tested it. You will not be able to see the impact because under the application, you will have only one file here. All right, Gopi. Yes. So with the existing, I mean, yeah, with the existing code, I have actually tested in the pod only, but in this scenario also, I will try to test it once again with the daily and this run mode, we need to change it. That one loss logic, I will try to test it once again, Gopi. Understood.
-
-And the next step is run entity wrapper. This will figure the module or this will load the data from file to table. And then we have the tag summary. Maybe in between, you should add this step of calling this FDP, calling this query, that whatever the merge query that Leela created. And while doing that, while querying that, you can utilize the FTP module and the tag, but you should use FTP module and create a subtask here so that you are doing the reconciliation here itself, not in FTP layer. Okay.
-
-    Okay, before the FDP triggers, right? Yes. What happened? So you are just using a module, right? I'll show you how this is the ChatGPT MVP injection, right? MVP injection, what's happening? Environment variables and this MVP, the same module, you are calling it here with the input parameter of daily here. Right. Not sure, maybe somewhere we are passing that input parameter. I think in the code on existing, we have that parameter. Right. So here. Thank you.
-
-But you're calling this FDP solution, but with an input parameter of daily. And there is another tag for reference, FDP for FDP. Yeah, okay. So I think in the run mode, we are calling it as a daily, and next is the reference we are passing. That is where we are getting it. Correct, correct. So there are two different tags, but for this scenario, for reconciliation, I want you to use the, maybe analyze this. If it is not usable, let me know. That particular module is not usable for this scenario and all. It's fine. But for us, the view or the solution I'm looking at is, after the file is loaded, after this task, multi-entity runner is being triggered, you need to add a task here to trigger this FDP module with the input parameter of reconciliation so that it will trigger only that query. It will not do anything else. Yeah. It will only trigger the query, merge query, whatever we created for the reconciliation. Exactly. With the current logic, it's the same only Gopi, like it won't trigger. No, the current logic will do, when you are keeping it in the file or the logical. Okay, okay. That I have, that I will. No, no, no. Actually, the confusion is, so in this MAB pipeline, there is no queries here. In the logical where it was empty Gopi. So that's why I have added my query here. Understood. Maybe for testing,
+Documentation Structure You Should Create
+Based on the complete SOR discussion, your documentation should mainly contain:
+1. Overview / Problem Statement
+Title
+Snapshot-Based SOR CDC Framework for ODP Processing
+Description
+The source system provides snapshot-based files and does not maintain historical records. The objective is to build a snapshot-based CDC framework where:
+ODP acts as the System of Record (SOR)
+ODP always reflects the latest source state
+Old records from UPDATE and DELETE operations are preserved in OCIDC Audit datasets
+Reject records are stored in BigQuery tables
+Staging data is retained only for a configurable retention period
+2. Architecture Overview
+Documentation Section
+Components
+Component
+Purpose
+Source Files
+Daily snapshot input
+Staging Dataset
+Temporary raw snapshot storage
+Reject Tables
+Validation failure storage
+ODP Dataset
+Current snapshot System of Record
+OCIDC Audit Dataset
+Old record preservation
+DAG/Pipeline
+End-to-end orchestration
+3. End-to-End Flow
+Process Flow
+Plain text
+1. Source sends daily snapshot files
+2. Files loaded into staging dataset
+3. Validation performed
+4. Reject records stored in reject tables
+5. CDC merge logic executed
+6. INSERT → ODP
+7. UPDATE → old record copied to OCIDC audit → ODP updated
+8. DELETE → old record copied to OCIDC audit → record deleted from ODP
+9. Retention cleanup executed for staging
+4. Dataset Design
+A. Staging Dataset
+Purpose
+Temporary storage for incoming snapshot files.
+Characteristics
+Contains raw source snapshot data
+Retention: 90 days
+Used for CDC comparison processing
+Additional Columns
+ingestion_ts
+batch_id
+source_file_name
+dag_id
+B. Reject Dataset
+Purpose
+Store validation failures instead of flat reject files.
+Example Columns
+Column
+Description
+pk
+Primary key column
+pk_value
+Failed record PK
+reject_reason
+Validation failure
+raw_record
+Raw failed data
+batch_id
+Batch identifier
+ingestion_ts
+Load timestamp
+C. ODP Dataset (SOR)
+Purpose
+Maintain latest snapshot state of source system.
+Key Points
+Exact replica of latest source state
+No historical records
+Current active records only
+Operations Supported
+INSERT
+UPDATE
+DELETE
+D. OCIDC Audit Dataset
+Purpose
+Preserve old records before UPDATE and DELETE operations.
+Key Points
+Same schema as ODP
+Stores previous values
+INSERT operations excluded
+Additional Audit Columns
+Column
+Description
+audit_op_type
+UPDATE/DELETE
+audit_ts
+Audit capture timestamp
+source_table
+Originating table
+batch_id
+Batch identifier
+5. CDC Logic Documentation
+INSERT Logic
+Condition
+Record exists in staging but not in ODP.
+Action
+Insert directly into ODP.
+Audit
+No audit entry created.
+UPDATE Logic
+Condition
+Primary key exists but data changed.
+Action
+Copy old ODP record to OCIDC audit
+Update ODP with latest value
+DELETE Logic
+Condition
+Record exists in ODP but missing from latest snapshot.
+Action
+Copy old ODP record to OCIDC audit
+Delete record from ODP
+6. Initial Load Handling
+Description
+Initial snapshot load will be processed using the same CDC framework.
+All records will naturally flow as INSERT operations.
+Expected Behavior
+Records inserted into ODP
+No OCIDC audit entries created
+7. Retention Logic
+Requirement
+Staging data should not grow indefinitely.
+Current Retention
+90 days
+Future Retention
+Configurable to:
+30 days
+7 days
+Cleanup Logic Example
+SQL
+DELETE FROM staging_table
+WHERE ingestion_ts < CURRENT_TIMESTAMP() - INTERVAL 90 DAY
+8. Daily Processing Logic
+Important Requirement
+Do not process entire 90-day staging dataset.
+Process only:
+latest ingestion records
+current execution snapshot
+Filtering Example
+SQL
+WHERE ingestion_dt = CURRENT_DATE()
+9. Merge Logic
+High-Level Merge Process
+Plain text
+STAGING vs ODP
+        ↓
+Detect:
+- INSERT
+- UPDATE
+- DELETE
+        ↓
+Apply actions
+10. Audit Column Standardization
+Common Columns
+Column
+Purpose
+ingestion_ts
+Load tracking
+current_ts
+Record timestamp
+batch_id
+Batch lineage
+dag_id
+DAG execution tracking
+source_file_name
+File traceability
+11. JIRA Stories to Create
+Story 1
+Create ODP Dataset and Snapshot Tables
+Story 2
+Create OCIDC Audit Dataset and Audit Tables
+Story 3
+Implement Snapshot-Based CDC Merge Logic
+Story 4
+Implement UPDATE and DELETE Audit Preservation Logic
+Story 5
+Implement Initial Load Processing Framework
+Story 6
+Replace Reject Flat Files with BigQuery Reject Tables
+Story 7
+Implement Staging Retention Cleanup Logic
+Story 8
+Add Operational Audit Columns Across Pipeline
+Story 9
+Integrate CDC Processing into Existing DAG
+Story 10
+Implement Latest Snapshot Filtering Logic
+12. Lead’s Main Expectations
+Your lead expects you to:
+Understand snapshot-based CDC
+Understand SOR concepts
+Understand merge processing
+Understand audit preservation
+Think beyond coding
+Design scalable logic for all tables
+Ensure ODP always matches source
+Avoid duplicate processing
+Implement operational auditability
+13. One-Line Summary for Documentation
+“The solution implements a snapshot-based CDC SOR framework where ODP maintains the latest source state while OCIDC audit datasets preserve old records before UPDATE and DELETE operations to avoid historical data loss.”
