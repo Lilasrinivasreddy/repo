@@ -1,23 +1,38 @@
-1. Create ODP dataset and snapshot (SOR) tables
+Description
 
-2. Create OCIDC audit datasets and tables
+Create ODP datasets and snapshot-based SOR tables to maintain the latest source snapshot data. ODP tables will act as the System of Record and always contain the current/latest active records from the source system.
 
-3. Implement snapshot-based CDC merge logic
+2. Implement CDC Merge Logic
+Description
 
-4. Implement UPDATE/DELETE old record preservation into OCIDC audit
+Implement snapshot-based CDC merge logic to compare staging data with ODP tables and identify INSERT, UPDATE, and DELETE operations using primary key comparison.
 
-5. Implement initial data load handling in CDC pipeline
+3. Initial Data Load Handling in CDC Pipeline
+Description
 
-6. Implement reject record handling using BigQuery tables
+Implement initial load handling within the CDC framework where all records from the initial snapshot file are treated as INSERT records and loaded directly into ODP tables without audit processing.
 
-7. Implement staging table retention cleanup (90 days)
+4. Staging Table Creation / Retention (90 Days)
+Description
 
-8. Finalize operational audit columns across datasets
+Create staging datasets and tables for temporary storage of snapshot files and implement retention cleanup logic to remove records older than 90 days using ingestion timestamp.
 
-9. Implement latest snapshot filtering logic for CDC processing
+5. Create Audit Table Along With Finalizing Columns and Logic
+Description
 
-10. Integrate CDC merge and audit pipeline into Airflow/Composer DAG
+Create OCIDC audit datasets and tables to preserve old records before UPDATE and DELETE operations. Finalize audit table structure, audit columns, and preservation logic for CDC processing.
 
-11. Implement CDC validation and reconciliation checks
+6. Integrate CDC Merge and Audit Pipeline into Composer DAG
+Description
 
-12. End-to-end testing of CDC SOR framework
+Integrate the complete snapshot CDC processing framework, including merge processing, audit preservation, validation, cleanup, and reconciliation logic into the existing Airflow/Composer DAG orchestration pipeline.
+
+7. Implement CDC Validation and Reconciliation Checks for Processing
+Description
+
+Implement validation and reconciliation checks to verify CDC processing accuracy across staging, ODP, and audit datasets, including insert, update, delete, and record count validations.
+
+8. Testing of All Items
+Description
+
+Perform end-to-end testing for the complete snapshot-based CDC SOR framework including initial load, CDC merge processing, audit preservation, DAG execution, retention cleanup, reconciliation checks, and reject handling.
