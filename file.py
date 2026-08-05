@@ -1,21 +1,8 @@
-Yes, okay. In the interest of time, I need you to do that service now ticket creation today. Okay, yeah. Yeah, before you log off, try to create those service tickets because tickets will take time, right? So it's better to take an action on it as early as possible. Are you sure about it, yeah. Not that you have any other, yeah. Wait for that ticket to come back till I pass to comment, for these kind of actions, okay? Okay, okay, yeah.
+Yeah. So, when you take the table count, use the information schema. Yeah, yeah, yeah. Got it, got it. Information schema, yes.This your yours, and from here, you get the table count for each ODP tables. Okay, okay, okay. That's what you get the right side of your in your side when you join. Understand, understand. So, this is what, okay. Okay. So, here, and then what I'm doing is, yeah, just creating a time table prompt, using this audit to get the count. This is just a string. And then I'm using it here. Okay. And then, yeah. So, my left side table count, which is nothing but this, ODP tables, left side. Okay, okay, okay. And right side is this, left side. So, right side is this one, which is summary table. So, I'm using staging table. But in your case, you already have a project, ODP table. Right, right, right. Yes, yes. Yes, yes. It is the same. Only ODP this one mentioned. Right. So, that we need to compare and, yeah, then we need to reconstruct that. Okay. So, this information schema tables, we need to take it. I mean, we need to get it with the ODP, okay. Yes.
 
 
 
-Your lead is asking you to prioritize the ServiceNow ticket creation today. Here's the breakdown:
-"In the interest of time, I need you to do that ServiceNow ticket creation today."
-Create the ServiceNow tickets today itself without delaying.
-"Before you log off, try to create those service tickets."
-Make sure the tickets are created before you finish work for the day.
-"Tickets will take time, right? So it's better to take an action on it as early as possible."
-Since ticket processing and approvals may take time, raising them early helps avoid delays.
-"Wait for that ticket to come back till I pass to comment, for these kind of actions."
-After creating the tickets, don't proceed with the dependent work.
-Wait until:
-the ticket is assigned/processed or comes back, and
-your lead reviews it or provides further comments/instructions.
-What you should do
-Create the required ServiceNow tickets today.
-Share the ticket numbers with your lead if needed.
-Wait for the ticket status/update or your lead's comments before taking the next action related to those requests.
-So the priority from your lead is: Raise the ServiceNow tickets first, then wait for approval/comments before proceeding further.
+
+
+
+Yeah, yeah. ODP should match with the summary table count, that's all, right? Yeah. Mind you is actually using staging one, but we should be using ODP summary table. ODP summary, yeah, yeah, understand. Hmm. Right, right. I will look that.
