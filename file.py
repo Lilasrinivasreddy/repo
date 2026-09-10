@@ -1,600 +1,364 @@
--- =====================================================================
--- SCHEME_EMPLOYER - PRD READ-ONLY FAILURE VALIDATION
--- NO INSERT / UPDATE / DELETE / MERGE / CREATE
--- =====================================================================
+-- ============================================================
+-- 1. DECLARE / GET LAST EXECUTION TIMESTAMP
+-- ============================================================
 
+DECLARE last_exec_ts DATETIME
+DEFAULT DATETIME('2000-01-01 00:00:00');
 
--- =====================================================================
--- TEST 1: OVERALL SCD2 STATUS
--- Purpose:
--- Check total rows, latest records, historical records and business keys.
--- =====================================================================
-
-SELECT
-    COUNT(*) AS total_rows,
-    COUNTIF(latest_rec_ind = TRUE) AS latest_true,
-    COUNTIF(latest_rec_ind = FALSE) AS historical_false,
-
-    COUNT(
-        DISTINCT CONCAT(
-            CAST(scheme_id AS STRING),
-            '|',
-            CAST(org_id AS STRING),
-            '|',
-            CAST(src_sys_id AS STRING)
+SET last_exec_ts = (
+    SELECT
+        COALESCE(
+            MAX(previous_execution_timestamp),
+            DATETIME('2000-01-01 00:00:00')
         )
-    ) AS distinct_business_keys
-
-FROM `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
-
-WHERE src_sys_id = 2;
+    FROM `{project_id}.gid_mfb_audit.mfb_odp_execution_tracking`
+    WHERE table_name = 'rds_addnl_support'
+);
 
 
--- =====================================================================
--- TEST 2: ODP MULTIPLE VERSIONS BUT FDP HAS FEWER ROWS
---
--- Purpose:
--- Find scenarios where ODP/source has multiple CURRENT_TS versions
--- for the same Scheme + Org + Hash, but FDP contains fewer rows.
---
--- This directly tests:
--- "There are scenarios where two rows are present on ODP
---  whereas there is only one row in FDP."
--- =====================================================================
+-- ============================================================
+-- 2. CREATE TEMP TABLE
+--    Store ranked delta records once and reuse them
+-- ============================================================
 
-WITH src_versions AS (
+CREATE TEMP TABLE tmp_rds_addnl_support AS
+SELECT
+    ASM_ADD_SUPP_NO,
+    ASM_CSTMR_INSTRN_POS_ID,
+    ASM_USER_ID,
+    ASM_CSTMR_REF,
+    ASM_SUPPORT_CODE,
+    ASM_EFFECTIVE_DT,
+    ASM_EXPLICIT_CNSNT_REQ,
+    ASM_SPCFC_SUPPORT,
+    ASM_EXPIRY_DT,
+    ASM_STATUS,
+    ODP_INGEST_TIMESTAMP,
+    OPTYPE,
+    SRC_FILENAME,
+    CURRENT_TS,
 
-    SELECT
-        SAFE_CAST(sch.ISC_POA_SCHEME_ID AS INT64) AS scheme_id,
-        SAFE_CAST(prhm.IPY_PARTY_ID AS INT64) AS org_id,
+    ROW_NUMBER() OVER (
+        PARTITION BY ASM_ADD_SUPP_NO
+        ORDER BY
+            ODP_INGEST_TIMESTAMP DESC,
+            CURRENT_TS DESC
+    ) AS rn
 
-        TO_HEX(
-            SHA256(
-                CONCAT(
-                    COALESCE(
-                        CAST(prhmd.IDD_ROLE_COMML_DATE AS STRING),
-                        ''
-                    ),
-                    COALESCE(
-                        CAST(prhmd.IDD_ROLE_EXP_DATE AS STRING),
-                        ''
-                    )
-                )
-            )
-        ) AS hash_key_txt,
+FROM `{project_id}.gid_mfb_staging.rds_addnl_support_stg`
 
-        prhmd.CURRENT_TS AS source_current_ts,
+WHERE ODP_INGEST_TIMESTAMP > last_exec_ts
+  AND OPTYPE IN ('I', 'U', 'D');
 
-        DATE(prhmd.ODP_INGEST_TIMESTAMP) AS odp_ingest_date
 
-    FROM
-        `iw-gid-prd-01-c683.gid_brd_staging.ta_poa_role_hdr_pty_map_dtl_stg`
-        prhmd
+-- ============================================================
+-- 3. START TRANSACTION
+-- ============================================================
 
-    INNER JOIN
-        `iw-gid-prd-01-c683.gid_brd_staging.ta_poa_role_hdr_pty_map_stg`
-        prhm
+BEGIN TRANSACTION;
 
-        ON prhmd.IRD_ROL_HDR_PTY_MAP_ID =
-           prhm.IRD_ROL_HDR_PTY_MAP_ID
 
-    INNER JOIN
-        `iw-gid-prd-01-c683.gid_brd_staging.ta_poa_role_hdr_stg`
-        prh
+-- ============================================================
+-- 4. CDC AUDIT
+-- ============================================================
 
-        ON prh.IHR_ROLE_HDR_ID =
-           prhm.IHR_ROLE_HDR_ID
-
-        AND prh.IHR_ARRANGEMENT_REF_NO =
-            prhm.IRD_ARRANGEMENT_REF_NO
-
-    INNER JOIN
-        `iw-gid-prd-01-c683.gid_brd_staging.ta_poa_scheme_stg`
-        sch
-
-        ON sch.ISC_POA_SCHEME_ID =
-           prh.IHR_ASSOC_TYPE_ID
-
-    WHERE
-
-        prhmd.IDD_DELETE_FLAG = 'N'
-
-        AND prhmd.IDD_REC_END_DATE =
-            '9999-01-01T00:00:00'
-
-        AND prhmd.IDD_EFF_START_DATE <
-            prhmd.IDD_EFF_END_DATE
-
-        AND prhm.IRD_DELETE_FLAG = 'N'
-
-        AND prhm.IRD_REC_END_DATE =
-            '9999-01-01T00:00:00'
-
-        AND prh.IHR_DELETE_FLAG = 'N'
-
-        AND prh.IHR_REC_END_DATE =
-            '9999-01-01T00:00:00'
-
-        AND prh.IHR_ROLE_TYP = 'SEMP'
-
-        AND prh.IHR_ASSOC_TYPE_CD = 'SCH'
-
-        AND prh.IHR_ARRGMT_LEVEL_CD = 'SCH'
-
-        AND sch.ISC_DELETE_FLAG = 'N'
-
-        AND sch.ISC_REC_END_DATE =
-            '9999-01-01T00:00:00'
-),
-
-src_cnt AS (
-
-    SELECT
-        scheme_id,
-        org_id,
-        hash_key_txt,
-
-        COUNT(*) AS odp_rows,
-
-        COUNT(
-            DISTINCT source_current_ts
-        ) AS odp_versions,
-
-        MIN(source_current_ts)
-            AS first_source_ts,
-
-        MAX(source_current_ts)
-            AS latest_source_ts
-
-    FROM src_versions
-
-    GROUP BY
-        scheme_id,
-        org_id,
-        hash_key_txt
-),
-
-fdp_cnt AS (
-
-    SELECT
-        scheme_id,
-        org_id,
-        hash_key_txt,
-
-        COUNT(*) AS fdp_rows
-
-    FROM
-        `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
-
-    WHERE src_sys_id = 2
-
-    GROUP BY
-        scheme_id,
-        org_id,
-        hash_key_txt
+INSERT INTO
+`{project_id}.gid_mfb_odp_cdc_audit.rds_addnl_support_odp_cdc_audit`
+(
+    ASM_ADD_SUPP_NO,
+    ASM_CSTMR_INSTRN_POS_ID,
+    ASM_USER_ID,
+    ASM_CSTMR_REF,
+    ASM_SUPPORT_CODE,
+    ASM_EFFECTIVE_DT,
+    ASM_EXPLICIT_CNSNT_REQ,
+    ASM_SPCFC_SUPPORT,
+    ASM_EXPIRY_DT,
+    ASM_STATUS,
+    ODP_INGEST_TIMESTAMP,
+    OPTYPE,
+    SRC_FILENAME,
+    CURRENT_TS,
+    INGESTION_TS,
+    OPTYPE_STG
 )
 
-SELECT
-    s.scheme_id,
-    s.org_id,
-    s.hash_key_txt,
-
-    s.odp_rows,
-    s.odp_versions,
-
-    COALESCE(
-        f.fdp_rows,
-        0
-    ) AS fdp_rows,
-
-    s.first_source_ts,
-    s.latest_source_ts
-
-FROM src_cnt s
-
-LEFT JOIN fdp_cnt f
-
-    ON s.scheme_id = f.scheme_id
-    AND s.org_id = f.org_id
-    AND s.hash_key_txt = f.hash_key_txt
-
-WHERE
-    s.odp_versions >
-    COALESCE(f.fdp_rows, 0)
-
-ORDER BY
-    s.odp_versions -
-    COALESCE(f.fdp_rows, 0) DESC;
-
-
--- =====================================================================
--- TEST 3: SAME HASH + MULTIPLE SOURCE VERSIONS
---
--- Purpose:
--- Check whether same Scheme + Org + Hash exists with multiple
--- source CURRENT_TS values.
---
--- If rows are returned, this proves that multiple source versions
--- can have the same hash.
--- =====================================================================
+-- ============================================================
+-- 4A. EXISTING AUDIT LOGIC
+--     Capture current ODP record before change
+-- ============================================================
 
 SELECT
-    SAFE_CAST(
-        sch.ISC_POA_SCHEME_ID AS INT64
-    ) AS scheme_id,
+    act.ASM_ADD_SUPP_NO,
+    act.ASM_CSTMR_INSTRN_POS_ID,
+    act.ASM_USER_ID,
+    act.ASM_CSTMR_REF,
+    act.ASM_SUPPORT_CODE,
+    act.ASM_EFFECTIVE_DT,
+    act.ASM_EXPLICIT_CNSNT_REQ,
+    act.ASM_SPCFC_SUPPORT,
+    act.ASM_EXPIRY_DT,
+    act.ASM_STATUS,
+    act.ODP_INGEST_TIMESTAMP,
+    act.OPTYPE,
+    act.SRC_FILENAME,
+    act.CURRENT_TS,
+    CURRENT_DATETIME() AS INGESTION_TS,
+    stg.OPTYPE AS OPTYPE_STG
 
-    SAFE_CAST(
-        prhm.IPY_PARTY_ID AS INT64
-    ) AS org_id,
-
-    TO_HEX(
-        SHA256(
-            CONCAT(
-                COALESCE(
-                    CAST(
-                        prhmd.IDD_ROLE_COMML_DATE
-                        AS STRING
-                    ),
-                    ''
-                ),
-
-                COALESCE(
-                    CAST(
-                        prhmd.IDD_ROLE_EXP_DATE
-                        AS STRING
-                    ),
-                    ''
-                )
-            )
-        )
-    ) AS hash_key_txt,
-
-    COUNT(*) AS source_rows,
-
-    COUNT(
-        DISTINCT prhmd.CURRENT_TS
-    ) AS different_source_versions,
-
-    MIN(prhmd.CURRENT_TS)
-        AS first_current_ts,
-
-    MAX(prhmd.CURRENT_TS)
-        AS latest_current_ts
-
-FROM
-    `iw-gid-prd-01-c683.gid_brd_staging.ta_poa_role_hdr_pty_map_dtl_stg`
-    prhmd
+FROM tmp_rds_addnl_support AS stg
 
 INNER JOIN
-    `iw-gid-prd-01-c683.gid_brd_staging.ta_poa_role_hdr_pty_map_stg`
-    prhm
+`{project_id}.gid_mfb_odp.rds_addnl_support_odp` AS act
 
-    ON prhmd.IRD_ROL_HDR_PTY_MAP_ID =
-       prhm.IRD_ROL_HDR_PTY_MAP_ID
+ON act.ASM_ADD_SUPP_NO = stg.ASM_ADD_SUPP_NO
 
-INNER JOIN
-    `iw-gid-prd-01-c683.gid_brd_staging.ta_poa_role_hdr_stg`
-    prh
+WHERE stg.rn = 1
 
-    ON prh.IHR_ROLE_HDR_ID =
-       prhm.IHR_ROLE_HDR_ID
-
-    AND prh.IHR_ARRANGEMENT_REF_NO =
-        prhm.IRD_ARRANGEMENT_REF_NO
-
-INNER JOIN
-    `iw-gid-prd-01-c683.gid_brd_staging.ta_poa_scheme_stg`
-    sch
-
-    ON sch.ISC_POA_SCHEME_ID =
-       prh.IHR_ASSOC_TYPE_ID
-
-WHERE
-
-    prhmd.IDD_DELETE_FLAG = 'N'
-
-    AND prhmd.IDD_REC_END_DATE =
-        '9999-01-01T00:00:00'
-
-    AND prhmd.IDD_EFF_START_DATE <
-        prhmd.IDD_EFF_END_DATE
-
-    AND prhm.IRD_DELETE_FLAG = 'N'
-
-    AND prhm.IRD_REC_END_DATE =
-        '9999-01-01T00:00:00'
-
-    AND prh.IHR_DELETE_FLAG = 'N'
-
-    AND prh.IHR_REC_END_DATE =
-        '9999-01-01T00:00:00'
-
-    AND prh.IHR_ROLE_TYP = 'SEMP'
-
-    AND prh.IHR_ASSOC_TYPE_CD = 'SCH'
-
-    AND prh.IHR_ARRGMT_LEVEL_CD = 'SCH'
-
-    AND sch.ISC_DELETE_FLAG = 'N'
-
-    AND sch.ISC_REC_END_DATE =
-        '9999-01-01T00:00:00'
-
-GROUP BY
-    scheme_id,
-    org_id,
-    hash_key_txt
-
-HAVING
-    COUNT(DISTINCT prhmd.CURRENT_TS) > 1
-
-ORDER BY
-    different_source_versions DESC;
+  AND act.ODP_INGEST_TIMESTAMP
+      < stg.ODP_INGEST_TIMESTAMP
 
 
--- =====================================================================
--- TEST 4: MORE OR LESS THAN ONE LATEST RECORD
---
--- Expected result: 0 rows
---
--- Every Scheme + Org + Source System should have exactly
--- one latest_rec_ind = TRUE.
--- =====================================================================
+-- ============================================================
+-- 4B. NEW AUDIT LOGIC
+--     rn != 1 records are not sent to ODP,
+--     so preserve them in CDC audit
+-- ============================================================
+
+UNION ALL
 
 SELECT
-    scheme_id,
-    org_id,
-    src_sys_id,
+    stg.ASM_ADD_SUPP_NO,
+    stg.ASM_CSTMR_INSTRN_POS_ID,
+    stg.ASM_USER_ID,
+    stg.ASM_CSTMR_REF,
+    stg.ASM_SUPPORT_CODE,
+    stg.ASM_EFFECTIVE_DT,
+    stg.ASM_EXPLICIT_CNSNT_REQ,
+    stg.ASM_SPCFC_SUPPORT,
+    stg.ASM_EXPIRY_DT,
+    stg.ASM_STATUS,
+    stg.ODP_INGEST_TIMESTAMP,
+    stg.OPTYPE,
+    stg.SRC_FILENAME,
+    stg.CURRENT_TS,
+    CURRENT_DATETIME() AS INGESTION_TS,
+    stg.OPTYPE AS OPTYPE_STG
 
-    COUNT(*) AS total_versions,
+FROM tmp_rds_addnl_support AS stg
 
-    COUNTIF(
-        latest_rec_ind = TRUE
-    ) AS latest_true_count,
-
-    COUNTIF(
-        latest_rec_ind = FALSE
-    ) AS historical_count
-
-FROM
-    `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
-
-WHERE src_sys_id = 2
-
-GROUP BY
-    scheme_id,
-    org_id,
-    src_sys_id
-
-HAVING
-    COUNTIF(latest_rec_ind = TRUE) != 1
-
-ORDER BY
-    total_versions DESC;
+WHERE stg.rn != 1;
 
 
--- =====================================================================
--- TEST 5: LATEST RECORD MUST HAVE EFF_TO_DT = 9999-01-01
---
--- Expected result: 0 rows
--- =====================================================================
+-- ============================================================
+-- 5. CDC MERGE INTO ODP
+--    Only latest row rn = 1 is used
+-- ============================================================
 
-SELECT
-    scheme_emplyr_key_id,
-    scheme_id,
-    org_id,
-    src_sys_id,
-    eff_from_dt,
-    eff_to_dt,
-    latest_rec_ind
+MERGE INTO
+`{project_id}.gid_mfb_odp.rds_addnl_support_odp` AS T
 
-FROM
-    `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
-
-WHERE
-    src_sys_id = 2
-
-    AND latest_rec_ind = TRUE
-
-    AND eff_to_dt != DATE '9999-01-01'
-
-ORDER BY
-    scheme_id,
-    org_id;
-
-
--- =====================================================================
--- TEST 6: EFF_FROM_DT MUST BE BEFORE EFF_TO_DT
---
--- Expected result: 0 rows
--- =====================================================================
-
-SELECT
-    scheme_emplyr_key_id,
-    scheme_id,
-    org_id,
-    src_sys_id,
-    eff_from_dt,
-    eff_to_dt,
-    latest_rec_ind
-
-FROM
-    `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
-
-WHERE
-    src_sys_id = 2
-
-    AND eff_from_dt >= eff_to_dt
-
-ORDER BY
-    scheme_id,
-    org_id,
-    eff_from_dt;
-
-
--- =====================================================================
--- TEST 7: CHECK FOR OVERLAPPING SCD2 DATE RANGES
---
--- Expected result: 0 rows
---
--- Example of failure:
---
--- Version 1 : 2025-01-01 -> 2025-10-01
--- Version 2 : 2025-09-01 -> 9999-01-01
---
--- These overlap.
--- =====================================================================
-
-WITH scd_check AS (
-
+USING
+(
     SELECT
-        scheme_emplyr_key_id,
-        scheme_id,
-        org_id,
-        src_sys_id,
-        eff_from_dt,
-        eff_to_dt,
-        latest_rec_ind,
+        ASM_ADD_SUPP_NO,
+        ASM_CSTMR_INSTRN_POS_ID,
+        ASM_USER_ID,
+        ASM_CSTMR_REF,
+        ASM_SUPPORT_CODE,
+        ASM_EFFECTIVE_DT,
+        ASM_EXPLICIT_CNSNT_REQ,
+        ASM_SPCFC_SUPPORT,
+        ASM_EXPIRY_DT,
+        ASM_STATUS,
+        ODP_INGEST_TIMESTAMP,
+        OPTYPE,
+        SRC_FILENAME,
+        CURRENT_TS
 
-        LAG(eff_to_dt) OVER (
+    FROM tmp_rds_addnl_support
 
-            PARTITION BY
-                scheme_id,
-                org_id,
-                src_sys_id
+    WHERE rn = 1
 
-            ORDER BY
-                eff_from_dt
+) AS S
 
-        ) AS previous_eff_to_dt
+ON T.ASM_ADD_SUPP_NO = S.ASM_ADD_SUPP_NO
 
-    FROM
-        `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
 
-    WHERE src_sys_id = 2
+-- ============================================================
+-- DELETE CASE
+-- ============================================================
+
+WHEN MATCHED
+    AND S.OPTYPE = 'D'
+    AND T.ODP_INGEST_TIMESTAMP <= S.ODP_INGEST_TIMESTAMP
+THEN
+    DELETE
+
+
+-- ============================================================
+-- UPDATE EXISTING RECORD
+-- I/U both refresh the existing ODP row
+-- ============================================================
+
+WHEN MATCHED
+    AND S.OPTYPE IN ('I', 'U')
+    AND T.ODP_INGEST_TIMESTAMP < S.ODP_INGEST_TIMESTAMP
+THEN
+
+UPDATE SET
+
+    T.ASM_CSTMR_INSTRN_POS_ID =
+        S.ASM_CSTMR_INSTRN_POS_ID,
+
+    T.ASM_USER_ID =
+        S.ASM_USER_ID,
+
+    T.ASM_CSTMR_REF =
+        S.ASM_CSTMR_REF,
+
+    T.ASM_SUPPORT_CODE =
+        S.ASM_SUPPORT_CODE,
+
+    T.ASM_EFFECTIVE_DT =
+        S.ASM_EFFECTIVE_DT,
+
+    T.ASM_EXPLICIT_CNSNT_REQ =
+        S.ASM_EXPLICIT_CNSNT_REQ,
+
+    T.ASM_SPCFC_SUPPORT =
+        S.ASM_SPCFC_SUPPORT,
+
+    T.ASM_EXPIRY_DT =
+        S.ASM_EXPIRY_DT,
+
+    T.ASM_STATUS =
+        S.ASM_STATUS,
+
+    T.ODP_INGEST_TIMESTAMP =
+        S.ODP_INGEST_TIMESTAMP,
+
+    T.OPTYPE =
+        S.OPTYPE,
+
+    T.SRC_FILENAME =
+        S.SRC_FILENAME,
+
+    T.CURRENT_TS =
+        S.CURRENT_TS,
+
+    T.UPDATED_TS =
+        CURRENT_DATETIME()
+
+
+-- ============================================================
+-- INSERT NEW RECORD
+-- U is also allowed as insert for missed-day recovery
+-- ============================================================
+
+WHEN NOT MATCHED
+    AND S.OPTYPE IN ('I', 'U')
+THEN
+
+INSERT
+(
+    ASM_ADD_SUPP_NO,
+    ASM_CSTMR_INSTRN_POS_ID,
+    ASM_USER_ID,
+    ASM_CSTMR_REF,
+    ASM_SUPPORT_CODE,
+    ASM_EFFECTIVE_DT,
+    ASM_EXPLICIT_CNSNT_REQ,
+    ASM_SPCFC_SUPPORT,
+    ASM_EXPIRY_DT,
+    ASM_STATUS,
+    ODP_INGEST_TIMESTAMP,
+    OPTYPE,
+    SRC_FILENAME,
+    CURRENT_TS,
+    CREATED_TS,
+    UPDATED_TS
 )
 
-SELECT
-    *
-
-FROM scd_check
-
-WHERE
-    previous_eff_to_dt IS NOT NULL
-
-    AND eff_from_dt < previous_eff_to_dt
-
-ORDER BY
-    scheme_id,
-    org_id,
-    eff_from_dt;
-
-
--- =====================================================================
--- TEST 8A: REFERENTIAL INTEGRITY
---
--- scheme_employer contains scheme_id
--- but corresponding scheme does NOT exist.
--- =====================================================================
-
-SELECT
-    se.scheme_id,
-
-    COUNT(*) AS employer_rows
-
-FROM
-    `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
-    se
-
-LEFT JOIN
-    `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme`
-    s
-
-    ON se.scheme_id = s.scheme_id
-
-WHERE
-    s.scheme_id IS NULL
-
-GROUP BY
-    se.scheme_id
-
-ORDER BY
-    employer_rows DESC;
+VALUES
+(
+    S.ASM_ADD_SUPP_NO,
+    S.ASM_CSTMR_INSTRN_POS_ID,
+    S.ASM_USER_ID,
+    S.ASM_CSTMR_REF,
+    S.ASM_SUPPORT_CODE,
+    S.ASM_EFFECTIVE_DT,
+    S.ASM_EXPLICIT_CNSNT_REQ,
+    S.ASM_SPCFC_SUPPORT,
+    S.ASM_EXPIRY_DT,
+    S.ASM_STATUS,
+    S.ODP_INGEST_TIMESTAMP,
+    S.OPTYPE,
+    S.SRC_FILENAME,
+    S.CURRENT_TS,
+    CURRENT_DATETIME(),
+    CURRENT_DATETIME()
+);
 
 
--- =====================================================================
--- TEST 8B: REVERSE REFERENTIAL CHECK
---
--- Scheme exists but Scheme Employer does not exist.
---
--- NOTE:
--- This does not automatically mean a defect.
--- It needs to be interpreted according to the business/design rules.
--- =====================================================================
+-- ============================================================
+-- 6. 90-DAY STAGING RETENTION
+-- ============================================================
 
-SELECT
-    s.scheme_id
+DELETE FROM
+`{project_id}.gid_mfb_staging.rds_addnl_support_stg`
 
-FROM
-    `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme`
-    s
-
-LEFT JOIN
-    `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
-    se
-
-    ON s.scheme_id = se.scheme_id
-
-WHERE
-    se.scheme_id IS NULL
-
-ORDER BY
-    s.scheme_id;
+WHERE ODP_INGEST_TIMESTAMP
+    < DATETIME(
+        TIMESTAMP_SUB(
+            CURRENT_TIMESTAMP(),
+            INTERVAL 90 DAY
+        )
+    );
 
 
--- =====================================================================
--- TEST 9: FIND BUSINESS KEYS HAVING REAL SCD2 HISTORY
---
--- Purpose:
--- Show Scheme/Org combinations having more than one FDP version.
--- Useful for manually inspecting historical records.
--- =====================================================================
+-- ============================================================
+-- 7. UPDATE EXECUTION TRACKING
+-- ============================================================
 
-SELECT
-    scheme_id,
-    org_id,
-    src_sys_id,
+MERGE
+`{project_id}.gid_mfb_audit.mfb_odp_execution_tracking` AS T
 
-    COUNT(*) AS total_versions,
+USING
+(
+    SELECT
+        'rds_addnl_support' AS table_name,
+        CURRENT_DATETIME() AS previous_execution_timestamp
+) AS S
 
-    COUNTIF(
-        latest_rec_ind = TRUE
-    ) AS latest_records,
-
-    COUNTIF(
-        latest_rec_ind = FALSE
-    ) AS historical_records,
-
-    MIN(eff_from_dt) AS first_eff_from_dt,
-
-    MAX(eff_from_dt) AS latest_eff_from_dt
-
-FROM
-    `iw-gid-prd-01-c683.gid_brd_scheme_fdp.scheme_employer`
-
-WHERE src_sys_id = 2
-
-GROUP BY
-    scheme_id,
-    org_id,
-    src_sys_id
-
-HAVING COUNT(*) > 1
-
-ORDER BY
-    total_versions DESC;
+ON T.table_name = S.table_name
 
 
--- =====================================================================
--- END OF READ-ONLY PRD VALIDATION
--- =====================================================================
+WHEN MATCHED THEN
+
+UPDATE SET
+
+    T.previous_execution_timestamp =
+        S.previous_execution_timestamp
+
+
+WHEN NOT MATCHED THEN
+
+INSERT
+(
+    table_name,
+    previous_execution_timestamp
+)
+
+VALUES
+(
+    S.table_name,
+    S.previous_execution_timestamp
+);
+
+
+-- ============================================================
+-- 8. COMMIT
+-- ============================================================
+
+COMMIT TRANSACTION;
