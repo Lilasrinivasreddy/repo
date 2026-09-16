@@ -1,3 +1,40 @@
-EDC we have to implement. That I'm clear on that. Apart from that, anything else you are again? For my... something, it's okay. What which Gopi has told, okay to me, is what I am. Okay, okay. So all the reports we frame, right? The way framed and data reports we bring them. Correct. Right, and we do that audit, certain OTP we will do that, right? Right, right. Yeah, but the rest of the reports where we not do any OTP, those reports we need to do auditing. Yeah, yeah. Is what my... Okay, okay, okay. Sorry? Same thing you also think, same. Yeah, yeah, correct. So same thing, the same logic only. So I have, so Gopi actually gave one query, okay? Okay. Already made that change. Oh. And he told me to discuss with you. Okay, okay. Yeah, he said you will understand what he even factor said. Okay. Let me share once again my screen.
+Yes — for the failed cases in the Excel you shared, the updated query is largely on the right track, but I would make one important correction before calling it good.
 
-Yeah, continue. No, this is, yeah, additional support table, okay. So this all I think you already know it? Yeah. This is fine. Yeah. This is also fine. This is we doing the filter. Yes, filtering condition, yeah. In the merge query also we will be doing our filter condition. Correct. So one thing we will focus that just before this query, okay, go back. What you are saying there, 2600 rows. Okay. This way we will do this I, U, N, D, where we set the records. Okay. From that staging we will be doing. So here create, set store this resulting in some temporary table. Okay, this should be stored in temp table, okay. This part. Okay, okay. Yeah, and then he said that as this query to CDC audit using union all. Okay. Meaning I will be same query. What you want to do, same query already stored in temp table, and then you say where RN not equals to 1. I think you doing RN equals to 1 below. Correct. RN 1, equal to 1, row number only we are taking 1, yes. So all the record will, it is not 1, like all the other records, right? We want to do audit, right? So take this record, only delta records we'll take, okay? Okay. We will do CDC audit all these records. All this record go to now, CDC audit table. So in the end we need to do union all wherever we have CDC audit, just add these records also in CDC audit. Okay. And then since we already have this, right? So why we storing it? Because we want to use it multiple times, once we store it here. So at one place you use it here, right? This is where you use it once. Second time you use it here in your original query, which already, with merge query. This is also here, right? Correct. So here we use temp table. Okay. This result will be stored, right? I will not use it again and again, what is the idea? So this will actually fix this all. So this already Goofy said that he did that sort of thing. Okay. But instead, let's do this and test it. Any differences, right? ChatGPT this clear? Okay, okay. I hope you understand.
+Your highlighted changes for ROW_NUMBER() and removing CURRENT_TS from FARM_FINGERPRINT are appropriate. The part I would still change is the SCD2 MERGE.
+
+Currently you have essentially:
+
+ON tgt.org_id = s.org_id
+AND tgt.src_sys_id = s.src_sys_id
+AND tgt.latest_rec_ind = TRUE
+AND tgt.hash_key_txt <> s.hash_key_txt
+
+For the validation requirement, change it to:
+
+ON tgt.org_key_id = s.org_key_id
+AND tgt.src_sys_id = s.src_sys_id
+AND tgt.latest_rec_ind = TRUE
+
+WHEN MATCHED
+AND tgt.hash_key_txt <> s.hash_key_txt
+THEN
+UPDATE SET
+    tgt.latest_rec_ind = FALSE,
+    tgt.eff_to_dt = s.eff_from_dt,
+    tgt.rec_upd_ts = CURRENT_TIMESTAMP(),
+    tgt.batch_load_upd_id = 111
+
+And include org_key_id in the USING SELECT:
+
+SELECT
+    org_key_id,
+    org_id,
+    src_sys_id,
+    hash_key_txt,
+    eff_from_dt
+FROM src_c
+WHERE rn = 1
+
+So: your query is close, but make this MERGE correction. The org_id NULLABLE → REQUIRED failure is a table-schema change, not something this SQL can fix.
+
+I wouldn't change anything else in the query for the failed cases you showed.
