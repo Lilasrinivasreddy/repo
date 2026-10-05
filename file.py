@@ -1,17 +1,14 @@
--- Customer late-arrival changes for the two supplied screenshots.
--- TEST SCRIPT: all customer/tracking writes below affect TEMPORARY copies.
--- PREREQUISITE: customer must contain src_current_ts TIMESTAMP and src_odp_ts TIMESTAMP.
--- Suggested schema statements, intentionally NOT executed in this test script:
--- ALTER TABLE gid_brd_customer_fdp.customer ADD COLUMN IF NOT EXISTS src_current_ts TIMESTAMP;
--- ALTER TABLE gid_brd_customer_fdp.customer ADD COLUMN IF NOT EXISTS src_odp_ts TIMESTAMP;
--- Backfill these from authoritative source lineage before incremental testing.
--- Do NOT backfill src_current_ts from rec_upd_ts (FDP processing time).
--- Assumptions: source timestamps can be CAST to TIMESTAMP; DATETIME tracking is UTC.
--- CURRENT_TS identifies source versions; person CURRENT_TS remains the customer
--- ordering timestamp, matching the original query. Non-person-only changes use
--- src_odp_ts as a tie-breaker when the person source timestamp is unchanged.
--- Existing source joins/business filters are retained. This does not reconstruct
--- as-of historical joins or repair all existing SCD effective-date intervals.
+-- Customer late-arrival test script: EXISTING CUSTOMER SCHEMA, no ALTER TABLE.
+-- All customer and tracking writes affect TEMPORARY copies only.
+-- src_current_ts/src_odp_ts below are temporary aliases, never target columns.
+-- ODP ingestion time detects arrivals; person CURRENT_TS orders source versions.
+-- Existing latest person source time is looked up using the original fingerprint.
+-- REQUIREMENT: the matching target source version must remain in staging.
+-- eff_from_dt is used only for existing effective-date handling, not latest ranking.
+-- Assumes source values are TIMESTAMP-compatible and tracking DATETIME is UTC.
+-- Original business transformations and joins are retained; historical as-of joins
+-- and complete SCD effective-date interval repair are not implemented here.
+-- Equal source timestamps with conflicting content require a separate business rule.
 
 DECLARE run_cutoff TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
 BEGIN TRANSACTION;
@@ -24,13 +21,28 @@ CREATE TEMP TABLE customer AS
 SELECT * FROM gid_brd_customer_fdp.customer WHERE src_sys_id = 2;
 
 ASSERT NOT EXISTS (
-  SELECT 1 FROM customer
-  WHERE src_current_ts IS NULL OR src_odp_ts IS NULL
-) AS 'Backfill source timestamps on existing customer history before running.';
-ASSERT NOT EXISTS (
   SELECT 1 FROM customer WHERE latest_rec_ind IS TRUE
   GROUP BY customer_id, src_sys_id HAVING COUNT(*) > 1
 ) AS 'More than one existing latest customer row: reconcile before running.';
+
+-- CHANGED: reconstruct target source time temporarily from retained staging.
+-- Do not apply current-record business filters to this historical lookup.
+CREATE TEMP TABLE target_source_version AS
+SELECT t.customer_id, t.src_sys_id, t.customer_key_id,
+  t.latest_rec_ind, p.target_current_ts
+FROM customer t
+LEFT JOIN (
+  SELECT IPY_PARTY_ID AS customer_id,
+    FARM_FINGERPRINT(CONCAT(CAST(PER_PERSON_ID AS STRING),
+      CAST(IPY_PARTY_ID AS STRING), STRING(CURRENT_TS), 'BANCS'))
+      AS customer_key_id,
+    MIN(CAST(CURRENT_TS AS TIMESTAMP)) AS target_current_ts
+  FROM gid_brd_staging.ta_prt_person_stg
+  WHERE CAST(ODP_INGEST_TIMESTAMP AS TIMESTAMP) <= run_cutoff
+  GROUP BY customer_id, customer_key_id
+  HAVING COUNT(DISTINCT CAST(CURRENT_TS AS TIMESTAMP)) = 1
+) p ON p.customer_id = t.customer_id
+  AND p.customer_key_id = t.customer_key_id;
 
 CREATE TEMP TABLE src AS
 WITH last_run AS (
@@ -145,7 +157,7 @@ base AS (
     per.CURRENT_TS AS per_current_ts, prt.CURRENT_TS AS prt_current_ts,
     prtdtl.CURRENT_TS AS prtdtl_current_ts,
     rolhld.CURRENT_TS AS rolhld_current_ts,
-    -- CHANGED: persist the same source ordering timestamp used originally.
+    -- CHANGED: source timestamp aliases are TEMPORARY only.
     CAST(per.CURRENT_TS AS TIMESTAMP) AS src_current_ts,
     GREATEST(CAST(per.ODP_INGEST_TIMESTAMP AS TIMESTAMP),
       CAST(prt.ODP_INGEST_TIMESTAMP AS TIMESTAMP),
@@ -175,8 +187,8 @@ src_final AS (
   WHERE NOT EXISTS (
     SELECT 1 FROM customer t
     WHERE t.customer_id = base.customer_id AND t.src_sys_id = base.src_sys_id
-      -- CHANGED: same hash at a DIFFERENT source time is valid history.
-      AND t.src_current_ts = base.src_current_ts
+      -- CHANGED: same hash with a DIFFERENT version key is valid history.
+      AND t.customer_key_id = base.customer_key_id
       AND t.hash_key_txt = base.hash_key_txt
   )
   QUALIFY ROW_NUMBER() OVER (
@@ -196,16 +208,28 @@ ranked AS (
 SELECT s.* EXCEPT(batch_rn),
   -- CHANGED: compute the decision BEFORE updating target; reuse for insert.
   s.batch_rn = 1 AND NOT EXISTS (
-    SELECT 1 FROM customer t
+    SELECT 1 FROM target_source_version t
     WHERE t.customer_id = s.customer_id AND t.src_sys_id = s.src_sys_id
       AND t.latest_rec_ind IS TRUE
-      AND (t.src_current_ts > s.src_current_ts
-        OR (t.src_current_ts = s.src_current_ts AND t.src_odp_ts >= s.src_odp_ts))
+      AND t.target_current_ts >= s.src_current_ts
   ) AS latest_rec_ind
 FROM ranked s;
 
 ASSERT NOT EXISTS (SELECT 1 FROM src WHERE src_current_ts IS NULL OR src_odp_ts IS NULL)
   AS 'Source timestamps must be populated for version comparison.';
+
+ASSERT NOT EXISTS (
+  SELECT 1 FROM target_source_version t
+  WHERE t.latest_rec_ind IS TRUE AND t.target_current_ts IS NULL
+    AND EXISTS (SELECT 1 FROM src s
+      WHERE s.customer_id = t.customer_id AND s.src_sys_id = t.src_sys_id)
+) AS 'Existing latest source version is missing from staging; cannot order safely.';
+
+ASSERT NOT EXISTS (
+  SELECT 1 FROM src
+  GROUP BY customer_id, src_sys_id, src_current_ts
+  HAVING COUNT(DISTINCT hash_key_txt) > 1
+) AS 'Conflicting content at one person source timestamp: resolve source joins/order.';
 
 UPDATE customer AS tgt
 SET latest_rec_ind = FALSE,
@@ -219,8 +243,13 @@ WHERE tgt.latest_rec_ind IS TRUE
     WHERE s.customer_id = tgt.customer_id AND s.src_sys_id = tgt.src_sys_id
       AND s.latest_rec_ind IS TRUE
       -- CHANGED: compare SOURCE time with SOURCE time.
-      AND (s.src_current_ts > tgt.src_current_ts
-        OR (s.src_current_ts = tgt.src_current_ts AND s.src_odp_ts > tgt.src_odp_ts))
+      AND EXISTS (
+        SELECT 1 FROM target_source_version v
+        WHERE v.customer_id = tgt.customer_id
+          AND v.src_sys_id = tgt.src_sys_id
+          AND v.customer_key_id = tgt.customer_key_id
+          AND s.src_current_ts > v.target_current_ts
+      )
   );
 
 INSERT INTO customer (
@@ -230,7 +259,7 @@ INSERT INTO customer (
   smoker_status_cd, death_dt, death_notified_dt, employment_status_cd,
   net_incm_amt, gross_incm_amt, incm_curncy_cd, hash_key_txt,
   eff_from_dt, eff_to_dt, latest_rec_ind, rec_ins_ts, rec_upd_ts,
-  batch_load_ins_id, batch_load_upd_id, src_current_ts, src_odp_ts
+  batch_load_ins_id, batch_load_upd_id
 )
 SELECT s.customer_key_id, s.occupation_id, s.nationality_id, s.life_status_id,
   s.src_sys_id, s.customer_id, s.customer_internal_ref_num, s.cust_ref_id,
@@ -238,8 +267,7 @@ SELECT s.customer_key_id, s.occupation_id, s.nationality_id, s.life_status_id,
   s.marital_status_cd, s.smoker_status_cd, s.death_dt, s.death_notified_dt,
   s.employment_status_cd, s.net_incm_amt, s.gross_incm_amt, s.incm_curncy_cd,
   s.hash_key_txt, s.eff_from_dt, s.eff_to_dt, s.latest_rec_ind,
-  CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), 112, 112,
-  s.src_current_ts, s.src_odp_ts
+  CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), 112, 112
 FROM src s;
 
 MERGE brd_fdp_execution_tracking AS T
@@ -254,4 +282,13 @@ COMMIT TRANSACTION;
 
 -- Test output; permanent tables remain unchanged.
 SELECT * FROM customer
-ORDER BY customer_id, src_current_ts DESC, src_odp_ts DESC;
+ORDER BY customer_id, latest_rec_ind DESC, rec_ins_ts DESC;
+
+-- Validation: this must return no rows (at most one latest per customer).
+SELECT customer_id, src_sys_id, COUNTIF(latest_rec_ind) AS latest_count
+FROM customer GROUP BY customer_id, src_sys_id
+HAVING COUNTIF(latest_rec_ind) != 1;
+
+-- Incoming decision details: source aliases exist only in this temporary table.
+SELECT customer_id, src_current_ts, src_odp_ts, latest_rec_ind, hash_key_txt
+FROM src ORDER BY customer_id, src_current_ts DESC, src_odp_ts DESC;
